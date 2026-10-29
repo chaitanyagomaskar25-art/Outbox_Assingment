@@ -46,12 +46,12 @@ const envSchema = z.object({
   // Google OAuth 2.0
   GOOGLE_CLIENT_ID: z.string().optional().default(''),
   GOOGLE_CLIENT_SECRET: z.string().optional().default(''),
-  GOOGLE_CALLBACK_URL: z.string().default('http://localhost:5000/api/auth/google/callback'),
+  GOOGLE_CALLBACK_URL: z.string().default('https://outbox-assingment-cqpz.vercel.app/api/auth/google/callback'),
 
   // Slack OAuth 2.0
   SLACK_CLIENT_ID: z.string().optional().default(''),
   SLACK_CLIENT_SECRET: z.string().optional().default(''),
-  SLACK_REDIRECT_URI: z.string().default('http://localhost:5000/api/integrations/slack/callback'),
+  SLACK_REDIRECT_URI: z.string().default('https://outbox-assingment-cqpz.vercel.app/api/integrations/slack/callback'),
   SLACK_SIGNING_SECRET: z.string().optional().default(''),
 
   // Bull-Board Admin Credentials

@@ -241,7 +241,7 @@ export const IntegrationsPage: React.FC = () => {
             </div>
 
             <p className="text-xs text-slate-500">
-              OAuth Callback URL: <code className="bg-slate-100 px-1.5 py-0.5 rounded text-[11px]">http://localhost:5000/api/auth/google/callback</code>
+              OAuth Callback URL: <code className="bg-slate-100 px-1.5 py-0.5 rounded text-[11px]">https://outbox-assingment-cqpz.vercel.app/api/auth/google/callback</code>
             </p>
           </div>
         </Card>

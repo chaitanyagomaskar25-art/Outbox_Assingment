@@ -11,7 +11,7 @@ export const openApiSpec = {
   },
   servers: [
     {
-      url: 'http://localhost:5000',
+      url: 'https://outbox-assingment-cqpz.vercel.app',
       description: 'Local Development Server',
     },
   ],
