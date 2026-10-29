@@ -27,6 +27,7 @@ model User {
   name            String?
   avatarUrl       String?
   googleId        String?            @unique
+  passwordHash    String?
   createdAt       DateTime           @default(now())
   updatedAt       DateTime           @updatedAt
 
@@ -91,6 +92,7 @@ model ScheduledEmail {
   @@index([scheduledAt])
   @@index([idempotencyKey])
   @@index([bullJobId])
+  @@unique([userId, idempotencyKey])
   @@map("scheduled_emails")
 }
 
@@ -158,4 +160,3 @@ model IdempotencyRecord {
   @@index([userId, key])
   @@map("idempotency_records")
 }
-

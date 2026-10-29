@@ -7,7 +7,8 @@ interface AuthContextType {
   isLoading: boolean;
   googleConfigured: boolean;
   loginWithGoogle: () => void;
-  mockLogin: (email?: string, name?: string) => Promise<void>;
+  loginWithEmail: (email: string, password: string) => Promise<void>;
+  signupWithEmail: (name: string, email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   refetchUser: () => Promise<void>;
 }
@@ -24,7 +25,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setIsLoading(true);
       const res = await api.get('/auth/me');
       setUser(res.data.data.user);
-      setGoogleConfigured(res.data.data.googleConfigured ?? false);
     } catch {
       setUser(null);
     } finally {
@@ -34,20 +34,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   useEffect(() => {
     fetchCurrentUser();
+    api
+      .get('/auth/config')
+      .then((res) => setGoogleConfigured(res.data.data.googleConfigured))
+      .catch(() => setGoogleConfigured(false));
   }, []);
 
   const loginWithGoogle = () => {
     window.location.href = '/api/auth/google';
   };
 
-  const mockLogin = async (email = 'demo@reachinbox.test', name = 'ReachInbox Demo User') => {
-    setIsLoading(true);
-    try {
-      const res = await api.post('/auth/mock-login', { email, name });
-      setUser(res.data.data.user);
-    } finally {
-      setIsLoading(false);
-    }
+  const loginWithEmail = async (email: string, password: string) => {
+    const res = await api.post('/auth/login', { email, password });
+    setUser(res.data.data.user);
+  };
+
+  const signupWithEmail = async (name: string, email: string, password: string) => {
+    const res = await api.post('/auth/signup', { name, email, password });
+    setUser(res.data.data.user);
   };
 
   const logout = async () => {
@@ -66,7 +70,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isLoading,
         googleConfigured,
         loginWithGoogle,
-        mockLogin,
+        loginWithEmail,
+        signupWithEmail,
         logout,
         refetchUser: fetchCurrentUser,
       }}
@@ -83,4 +88,3 @@ export const useAuth = () => {
   }
   return context;
 };
-

@@ -53,7 +53,6 @@ export class OutboxSweeperService {
       where: {
         status: OutboxStatus.PENDING,
         createdAt: { lte: threshold },
-        retries: { lt: 5 },
       },
       take: 50,
       orderBy: { createdAt: 'asc' },
@@ -141,7 +140,15 @@ export class OutboxSweeperService {
 
     for (const email of stalledEmails) {
       try {
-        // Re-enqueue job
+        const existingJob = await queue.getJob(email.bullJobId || email.id);
+        if (existingJob) {
+          logger.info(
+            { emailId: email.id, jobId: existingJob.id },
+            'BullMQ still owns the job; leaving recovery to BullMQ to avoid duplicate enqueue.'
+          );
+          continue;
+        }
+
         const payload: EmailJobData = {
           emailId: email.id,
           userId: email.userId,
@@ -153,13 +160,13 @@ export class OutboxSweeperService {
           batchId: email.batchId || undefined,
         };
 
-        await queue.add('send-email', payload, defaultJobOptions(email.id, 0));
+        const delayMs = Math.max(0, email.nextEligibleAt.getTime() - Date.now());
+        await queue.add('send-email', payload, defaultJobOptions(email.id, delayMs));
 
         await prisma.scheduledEmail.update({
           where: { id: email.id },
           data: {
             status: EmailStatus.SCHEDULED,
-            nextEligibleAt: new Date(),
           },
         });
         recoveredCount++;
@@ -173,4 +180,3 @@ export class OutboxSweeperService {
 }
 
 export const outboxSweeperService = new OutboxSweeperService();
-

@@ -1,10 +1,13 @@
 import { Request, Response, NextFunction } from 'express';
+import { randomBytes } from 'crypto';
 import jwt from 'jsonwebtoken';
+import { Prisma } from '@prisma/client';
 import { env } from '../config/env';
 import { prisma } from '../repositories/prisma';
 import { googleAuthService } from '../integrations/google/google.service';
 import { AppError } from '../middleware/errorHandler';
 import { logger } from '../utils/logger';
+import { hashPassword, verifyPassword } from '../services/passwordAuth.service';
 
 export class AuthController {
   /**
@@ -41,7 +44,7 @@ export class AuthController {
       }
 
       // Generate random state for CSRF protection
-      const state = Math.random().toString(36).substring(2, 15);
+      const state = randomBytes(32).toString('hex');
       res.cookie('oauth_state_google', state, {
         httpOnly: true,
         secure: env.NODE_ENV === 'production',
@@ -150,42 +153,85 @@ export class AuthController {
     });
   };
 
-  /**
-   * POST /api/auth/mock-login
-   * Development login fallback for instant testing without configuring Google Cloud Console
-   */
-  public mockLogin = async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const email = req.body.email || 'demo@reachinbox.test';
-      const name = req.body.name || 'ReachInbox Demo User';
+  public getAuthConfig = async (_req: Request, res: Response) => {
+    return res.json({
+      status: 'success',
+      data: { googleConfigured: googleAuthService.isConfigured(), passwordAuth: true },
+    });
+  };
 
-      let user = await prisma.user.findUnique({ where: { email } });
-      if (!user) {
-        user = await prisma.user.create({
-          data: {
-            email,
-            name,
-            avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&auto=format&fit=crop&q=80',
-          },
-        });
+  public signupWithPassword = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { name, email, password } = req.body as {
+        name: string;
+        email: string;
+        password: string;
+      };
+      const existingUser = await prisma.user.findUnique({ where: { email } });
+      if (existingUser) {
+        throw new AppError(
+          existingUser.passwordHash
+            ? 'An account with this email already exists. Sign in instead.'
+            : 'This email uses Google sign-in. Continue with Google instead.',
+          409
+        );
       }
 
-      const token = this.generateToken(user.id, user.email);
-      this.setAuthCookie(res, token);
+      let user;
+      try {
+        user = await prisma.user.create({
+          data: {
+            name,
+            email,
+            passwordHash: await hashPassword(password),
+          },
+          select: {
+            id: true,
+            email: true,
+            name: true,
+            avatarUrl: true,
+            googleId: true,
+          },
+        });
+      } catch (error) {
+        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+          throw new AppError('An account with this email already exists.', 409);
+        }
+        throw error;
+      }
 
+      this.setAuthCookie(res, this.generateToken(user.id, user.email));
+      return res.status(201).json({
+        status: 'success',
+        message: 'Account created successfully.',
+        data: { user },
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  public loginWithPassword = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { email, password } = req.body as { email: string; password: string };
+      const user = await prisma.user.findUnique({ where: { email } });
+
+      if (!(await verifyPassword(password, user?.passwordHash))) {
+        throw new AppError('Invalid email or password.', 401);
+      }
+
+      const sessionUser = {
+        id: user!.id,
+        email: user!.email,
+        name: user!.name,
+        avatarUrl: user!.avatarUrl,
+        googleId: user!.googleId,
+      };
+      this.setAuthCookie(res, this.generateToken(user!.id, user!.email));
       return res.json({
         status: 'success',
-        message: 'Authenticated successfully with local development account',
-        token,
-        data: {
-          user: {
-            id: user.id,
-            email: user.email,
-            name: user.name,
-            avatarUrl: user.avatarUrl,
-            googleId: user.googleId,
-          },
-        },
+        message: 'Signed in successfully.',
+        data: { user: sessionUser },
       });
     } catch (error) {
       next(error);
@@ -194,4 +240,3 @@ export class AuthController {
 }
 
 export const authController = new AuthController();
-

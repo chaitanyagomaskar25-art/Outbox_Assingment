@@ -22,7 +22,14 @@ class GoogleAuthService {
   }
 
   public isConfigured(): boolean {
-    return Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET);
+    const clientId = env.GOOGLE_CLIENT_ID.trim();
+    const clientSecret = env.GOOGLE_CLIENT_SECRET.trim();
+    return Boolean(
+      clientId &&
+        clientSecret &&
+        !clientId.startsWith('your_google_client_id') &&
+        !clientSecret.startsWith('your_google_client_secret')
+    );
   }
 
   public getAuthorizationUrl(state: string): string {
@@ -81,4 +88,3 @@ class GoogleAuthService {
 }
 
 export const googleAuthService = new GoogleAuthService();
-

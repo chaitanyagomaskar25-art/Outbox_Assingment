@@ -28,12 +28,12 @@ export const ScheduledEmailsPage: React.FC = () => {
   const { data, isLoading, isError, refetch, isRefetching } = useQuery({
     queryKey: ['emails', 'SCHEDULED', page, searchTerm],
     queryFn: async () => {
-      const res = await api.get('/emails', {
+      const res = await api.get(searchTerm.trim() ? '/emails/search' : '/emails', {
         params: {
           status: 'SCHEDULED',
           page,
           limit: 15,
-          search: searchTerm || undefined,
+          ...(searchTerm.trim() ? { q: searchTerm.trim() } : {}),
         },
       });
       return res.data.data;
@@ -215,4 +215,3 @@ export const ScheduledEmailsPage: React.FC = () => {
     </div>
   );
 };
-

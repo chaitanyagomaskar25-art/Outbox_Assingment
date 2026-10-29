@@ -1,5 +1,5 @@
-import { Worker, Job } from 'bullmq';
-import { EMAIL_QUEUE_NAME, EmailJobData, defaultJobOptions, getEmailQueue } from '../queues/email.queue';
+import { DelayedError, Worker, Job } from 'bullmq';
+import { EMAIL_QUEUE_NAME, EmailJobData } from '../queues/email.queue';
 import { redisConfig } from '../queues/redis.connection';
 import { prisma } from '../repositories/prisma';
 import { EmailStatus } from '@prisma/client';
@@ -99,7 +99,7 @@ export class EmailWorker {
     });
 
     // 3. Check Hourly Rate Limit
-    const rateCheck = await rateLimiterService.reserveHourlyQuota(senderId, userId);
+    const rateCheck = await rateLimiterService.reserveHourlyQuota(senderId, userId, emailId);
     if (!rateCheck.allowed) {
       // Limit exceeded for this sender. Defer to next eligible hourly window.
       logger.warn(
@@ -120,19 +120,8 @@ export class EmailWorker {
         },
       });
 
-      // Reschedule in BullMQ for next window
-      const queue = getEmailQueue();
-      await queue.add(
-        'send-email',
-        job.data,
-        defaultJobOptions(emailId, rateCheck.delayUntilNextWindowMs)
-      );
-
-      return {
-        deferred: true,
-        reason: 'Rate limit exceeded',
-        nextEligibleAt: rateCheck.nextEligibleAt,
-      };
+      await job.moveToDelayed(Date.now() + rateCheck.delayUntilNextWindowMs, job.token);
+      throw new DelayedError();
     }
 
     // 4. Enforce Distributed Minimum Send Delay
@@ -163,9 +152,6 @@ export class EmailWorker {
         username: sender.username,
         password: sender.password,
       });
-
-      // Update send timestamp for delay coordination
-      await rateLimiterService.markSendExecuted(senderId);
 
       // 6. Update PostgreSQL state to SENT
       const sentAt = new Date();
@@ -241,4 +227,3 @@ export class EmailWorker {
 }
 
 export const emailWorker = new EmailWorker();
-

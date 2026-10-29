@@ -71,7 +71,7 @@ export const DashboardLayout: React.FC = () => {
               className="w-full py-2.5 shadow-indigo-600/30 gap-2 font-medium"
             >
               <Plus className="w-4 h-4" />
-              Compose Email
+              Compose New Email
             </Button>
           </div>
 
@@ -128,35 +128,6 @@ export const DashboardLayout: React.FC = () => {
             </div>
           </nav>
 
-          {/* User profile footer */}
-          <div className="p-4 border-t border-slate-800 bg-slate-950/40">
-            <div className="flex items-center gap-3">
-              {user?.avatarUrl ? (
-                <img
-                  src={user.avatarUrl}
-                  alt={user.name || 'User'}
-                  className="w-9 h-9 rounded-full ring-2 ring-indigo-500/30 object-cover"
-                />
-              ) : (
-                <div className="w-9 h-9 rounded-full bg-indigo-900 text-indigo-200 font-semibold flex items-center justify-center text-sm">
-                  {user?.name?.[0] || user?.email?.[0] || 'U'}
-                </div>
-              )}
-              <div className="flex-1 min-w-0">
-                <p className="text-xs font-semibold text-white truncate">
-                  {user?.name || 'Authorized User'}
-                </p>
-                <p className="text-[11px] text-slate-400 truncate">{user?.email}</p>
-              </div>
-              <button
-                onClick={logout}
-                title="Logout"
-                className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-slate-800 rounded-lg transition-colors"
-              >
-                <LogOut className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
         </div>
       </aside>
 
@@ -171,14 +142,16 @@ export const DashboardLayout: React.FC = () => {
             >
               {isMobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
             </button>
-            <h1 className="text-base font-semibold text-slate-800">Outreach Operations</h1>
+            <h1 className="hidden text-base font-semibold text-slate-800 sm:block">
+              Outreach Operations
+            </h1>
           </div>
 
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 sm:gap-4">
             {/* Slack integration status indicator */}
             <div
               onClick={() => navigate('/integrations')}
-              className="cursor-pointer inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium border bg-slate-50 transition-colors hover:bg-slate-100"
+              className="hidden lg:inline-flex cursor-pointer items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium border bg-slate-50 transition-colors hover:bg-slate-100"
             >
               <Hash className="w-3.5 h-3.5 text-indigo-600" />
               <span>Slack:</span>
@@ -196,11 +169,47 @@ export const DashboardLayout: React.FC = () => {
               onClick={() => setIsComposeOpen(true)}
               variant="primary"
               size="sm"
-              className="hidden sm:inline-flex"
+              aria-label="Compose New Email"
+              title="Compose New Email"
+              className="whitespace-nowrap"
             >
               <Plus className="w-3.5 h-3.5" />
-              New Email
+              <span className="hidden sm:inline">Compose New Email</span>
             </Button>
+
+            <div className="flex items-center gap-2 border-l border-slate-200 pl-2 sm:pl-4">
+              {user?.avatarUrl ? (
+                <img
+                  src={user.avatarUrl}
+                  alt={user.name || 'Google account'}
+                  className="h-9 w-9 rounded-full border border-slate-200 object-cover"
+                />
+              ) : (
+                <div
+                  aria-label={`${user?.name || user?.email || 'User'} profile`}
+                  className="flex h-9 w-9 items-center justify-center rounded-full bg-indigo-100 text-sm font-semibold text-indigo-700"
+                >
+                  {(user?.name || user?.email || 'U').charAt(0).toUpperCase()}
+                </div>
+              )}
+              <div className="min-w-0">
+                <p className="max-w-20 truncate text-[11px] font-semibold text-slate-800 sm:max-w-40 sm:text-xs">
+                  {user?.name || 'Google User'}
+                </p>
+                <p className="max-w-20 truncate text-[10px] text-slate-500 sm:max-w-48 sm:text-[11px]">
+                  {user?.email}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={logout}
+                title="Log out"
+                aria-label="Log out"
+                className="rounded-lg p-2 text-slate-500 transition-colors hover:bg-slate-100 hover:text-rose-600"
+              >
+                <LogOut className="h-4 w-4" />
+              </button>
+            </div>
           </div>
         </header>
 
@@ -230,7 +239,7 @@ export const DashboardLayout: React.FC = () => {
               variant="primary"
               className="w-full mt-2"
             >
-              Compose Email
+              Compose New Email
             </Button>
           </div>
         )}
@@ -243,4 +252,3 @@ export const DashboardLayout: React.FC = () => {
     </div>
   );
 };
-

@@ -1,4 +1,5 @@
 import { EmailStatus, OutboxStatus } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { prisma } from '../repositories/prisma';
 import { getEmailQueue, defaultJobOptions, EmailJobData } from '../queues/email.queue';
 import { elasticsearchService } from '../integrations/elasticsearch/elasticsearch.service';
@@ -65,47 +66,70 @@ export class EmailSchedulerService {
    * Schedules a single email with transactional outbox guarantees
    */
   public async scheduleSingleEmail(userId: string, input: ScheduleEmailInput) {
+    if (input.idempotencyKey) {
+      const existingEmail = await prisma.scheduledEmail.findFirst({
+        where: { userId, idempotencyKey: input.idempotencyKey },
+      });
+      if (existingEmail) return existingEmail;
+    }
+
     const sender = await this.resolveSender(userId, input.senderId);
     const scheduledAtDate = new Date(input.scheduledAt);
     const now = Date.now();
     const delayMs = Math.max(0, scheduledAtDate.getTime() - now);
 
     // 1. Transactional Outbox: Write ScheduledEmail and EmailOutbox atomically
-    const { email, outbox } = await prisma.$transaction(async (tx) => {
-      const createdEmail = await tx.scheduledEmail.create({
-        data: {
+    let email;
+    let outbox;
+    try {
+      ({ email, outbox } = await prisma.$transaction(async (tx) => {
+        const createdEmail = await tx.scheduledEmail.create({
+          data: {
+            userId,
+            senderId: sender.id,
+            recipientEmail: input.recipientEmail.trim().toLowerCase(),
+            subject: input.subject,
+            body: input.body,
+            scheduledAt: scheduledAtDate,
+            nextEligibleAt: scheduledAtDate,
+            status: EmailStatus.SCHEDULED,
+            idempotencyKey: input.idempotencyKey,
+          },
+        });
+
+        const payload: EmailJobData = {
+          emailId: createdEmail.id,
           userId,
           senderId: sender.id,
-          recipientEmail: input.recipientEmail.trim().toLowerCase(),
-          subject: input.subject,
-          body: input.body,
-          scheduledAt: scheduledAtDate,
-          nextEligibleAt: scheduledAtDate,
-          status: EmailStatus.SCHEDULED,
-          idempotencyKey: input.idempotencyKey,
-        },
-      });
+          recipientEmail: createdEmail.recipientEmail,
+          subject: createdEmail.subject,
+          body: createdEmail.body,
+          scheduledAt: createdEmail.scheduledAt.toISOString(),
+        };
 
-      const payload: EmailJobData = {
-        emailId: createdEmail.id,
-        userId,
-        senderId: sender.id,
-        recipientEmail: createdEmail.recipientEmail,
-        subject: createdEmail.subject,
-        body: createdEmail.body,
-        scheduledAt: createdEmail.scheduledAt.toISOString(),
-      };
+        const createdOutbox = await tx.emailOutbox.create({
+          data: {
+            emailId: createdEmail.id,
+            payload: payload as any,
+            status: OutboxStatus.PENDING,
+          },
+        });
 
-      const createdOutbox = await tx.emailOutbox.create({
-        data: {
-          emailId: createdEmail.id,
-          payload: payload as any,
-          status: OutboxStatus.PENDING,
-        },
-      });
-
-      return { email: createdEmail, outbox: createdOutbox };
-    });
+        return { email: createdEmail, outbox: createdOutbox };
+      }));
+    } catch (error) {
+      if (
+        input.idempotencyKey &&
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        const existingEmail = await prisma.scheduledEmail.findFirst({
+          where: { userId, idempotencyKey: input.idempotencyKey },
+        });
+        if (existingEmail) return existingEmail;
+      }
+      throw error;
+    }
 
     // 2. Enqueue to BullMQ with stable Job ID
     try {
@@ -314,4 +338,3 @@ export class EmailSchedulerService {
 }
 
 export const emailSchedulerService = EmailSchedulerService.getInstance();
-

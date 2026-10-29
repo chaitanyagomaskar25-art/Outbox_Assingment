@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { getRedisClient } from '../queues/redis.connection';
 import { prisma } from '../repositories/prisma';
 import { env } from '../config/env';
@@ -53,88 +54,79 @@ export class RateLimiterService {
   public async reserveHourlyQuota(
     senderId: string,
     userId: string,
+    emailId: string,
     customHourlyLimit?: number
   ): Promise<RateLimitCheckResult> {
     const redis = getRedisClient();
-    const maxLimit = customHourlyLimit || env.MAX_EMAILS_PER_HOUR_PER_SENDER;
-    const { windowStart, nextWindowStart } = this.getHourlyWindowBounds();
-    const windowKey = `ratelimit:hourly:${senderId}:${windowStart.toISOString()}`;
-
-    // Atomic INCR with conditional TTL
+    const maxLimit = customHourlyLimit ?? env.MAX_EMAILS_PER_HOUR_PER_SENDER;
+    const { windowStart } = this.getHourlyWindowBounds();
+    const windowKey = `ratelimit:hourly:${senderId}`;
+    const firstWindowEpoch = Math.floor(windowStart.getTime() / 1000);
     const luaScript = `
-      local current = redis.call('INCR', KEYS[1])
-      if current == 1 then
-        redis.call('EXPIRE', KEYS[1], 7200)
+      local reservation_field = 'email:' .. ARGV[2]
+      local existing = redis.call('HGET', KEYS[1], reservation_field)
+      if existing then
+        local assigned_window, assigned_count = string.match(existing, '^(%d+):(%d+)$')
+        if tonumber(assigned_window) >= tonumber(ARGV[1]) then
+          return { tonumber(assigned_window), tonumber(assigned_count) }
+        end
+        redis.call('HDEL', KEYS[1], reservation_field)
       end
-      return current
+
+      local window_start = tonumber(ARGV[1])
+      local limit = tonumber(ARGV[3])
+      while true do
+        local window_field = 'window:' .. tostring(window_start)
+        local current = tonumber(redis.call('HGET', KEYS[1], window_field) or '0')
+        if current < limit then
+          current = redis.call('HINCRBY', KEYS[1], window_field, 1)
+          redis.call('HSET', KEYS[1], reservation_field, tostring(window_start) .. ':' .. tostring(current))
+          redis.call('EXPIRE', KEYS[1], 315360000)
+          return { window_start, current }
+        end
+        window_start = window_start + 3600
+      end
     `;
 
-    let currentCount = 1;
-    try {
-      currentCount = (await redis.eval(luaScript, 1, windowKey)) as number;
-    } catch (redisError) {
-      logger.warn(
-        { err: redisError, senderId },
-        'Redis unavailable for rate-limit counter; falling back to PostgreSQL count'
-      );
-      // PostgreSQL fallback
-      const usage = await prisma.hourlyRateLimitUsage.upsert({
-        where: {
-          senderId_windowStart: {
-            senderId,
-            windowStart,
-          },
-        },
-        update: {
-          emailCount: { increment: 1 },
-        },
-        create: {
-          senderId,
-          windowStart,
-          emailCount: 1,
-        },
-      });
-      currentCount = usage.emailCount;
-    }
+    const [reservedWindowEpoch, currentCount] = (await redis.eval(
+      luaScript,
+      1,
+      windowKey,
+      firstWindowEpoch.toString(),
+      emailId,
+      maxLimit.toString()
+    )) as [number, number];
+    const nextEligibleAt = new Date(reservedWindowEpoch * 1000);
+    const isCurrentWindow = reservedWindowEpoch === firstWindowEpoch;
 
-    const now = Date.now();
-    const delayUntilNextWindowMs = Math.max(1000, nextWindowStart.getTime() - now);
-
-    // Sync usage to PostgreSQL asynchronously for persistent audit records
-    prisma.hourlyRateLimitUsage
-      .upsert({
-        where: { senderId_windowStart: { senderId, windowStart } },
-        update: { emailCount: currentCount },
-        create: { senderId, windowStart, emailCount: currentCount },
-      })
-      .catch((err) => {
-        logger.warn({ err, senderId }, 'Failed to sync HourlyRateLimitUsage to DB');
-      });
-
-    if (currentCount > maxLimit) {
+    if (!isCurrentWindow) {
       logger.warn(
         {
           senderId,
           currentCount,
           maxLimit,
-          nextWindowStart: nextWindowStart.toISOString(),
+          nextEligibleAt: nextEligibleAt.toISOString(),
         },
-        'Hourly rate limit exceeded for sender. Deferring to next window.'
+        'Hourly rate limit reached for sender. Reserving capacity in a future window.'
       );
 
-      // Trigger Slack notification asynchronously if not already sent for this window
-      this.checkAndSendSlackRateLimitAlert(senderId, userId, maxLimit, currentCount, nextWindowStart).catch(
-        (err) => {
-          logger.error({ err, senderId }, 'Failed in Slack rate-limit alert trigger');
-        }
-      );
+      this.checkAndSendSlackRateLimitAlert(
+        senderId,
+        userId,
+        maxLimit,
+        maxLimit + 1,
+        nextEligibleAt,
+        windowStart
+      ).catch((err) => {
+        logger.error({ err, senderId }, 'Failed in Slack rate-limit alert trigger');
+      });
 
       return {
         allowed: false,
         currentCount,
         maxLimit,
-        nextEligibleAt: nextWindowStart,
-        delayUntilNextWindowMs,
+        nextEligibleAt,
+        delayUntilNextWindowMs: Math.max(1000, nextEligibleAt.getTime() - Date.now()),
       };
     }
 
@@ -142,14 +134,13 @@ export class RateLimiterService {
       allowed: true,
       currentCount,
       maxLimit,
-      nextEligibleAt: new Date(now),
+      nextEligibleAt: new Date(),
       delayUntilNextWindowMs: 0,
     };
   }
 
   /**
-   * Enforces minimum send delay across distributed workers
-   * Returns milliseconds the worker must wait before sending.
+   * Reserves the next send slot across distributed workers and returns its wait time.
    */
   public async coordinateSendDelay(
     senderId: string,
@@ -158,48 +149,25 @@ export class RateLimiterService {
     if (minDelayMs <= 0) return 0;
 
     const redis = getRedisClient();
-    const lockKey = `ratelimit:send_delay:${senderId}`;
+    const lockKey = `ratelimit:send_slot:${senderId}`;
     const now = Date.now();
 
-    // Atomic Lua script checking elapsed time
     const luaScript = `
-      local last = redis.call('GET', KEYS[1])
       local now = tonumber(ARGV[1])
       local min_delay = tonumber(ARGV[2])
-
-      if not last then
-        redis.call('SET', KEYS[1], now, 'PX', min_delay * 5)
-        return 0
-      else
-        local elapsed = now - tonumber(last)
-        if elapsed < min_delay then
-          return min_delay - elapsed
-        else
-          redis.call('SET', KEYS[1], now, 'PX', min_delay * 5)
-          return 0
-        end
-      end
+      local next_slot = tonumber(redis.call('GET', KEYS[1]) or '0')
+      local reserved_slot = math.max(now, next_slot)
+      local ttl = math.max(min_delay * 5, reserved_slot - now + min_delay * 5, 60000)
+      redis.call('SET', KEYS[1], reserved_slot + min_delay, 'PX', ttl)
+      return reserved_slot - now
     `;
 
     try {
       const waitTime = (await redis.eval(luaScript, 1, lockKey, now.toString(), minDelayMs.toString())) as number;
       return Math.max(0, waitTime);
     } catch (err) {
-      logger.warn({ err }, 'Redis delay coordination check failed. Permitting send.');
-      return 0;
-    }
-  }
-
-  /**
-   * Updates send delay timestamp after successful delivery
-   */
-  public async markSendExecuted(senderId: string): Promise<void> {
-    try {
-      const redis = getRedisClient();
-      const lockKey = `ratelimit:send_delay:${senderId}`;
-      await redis.set(lockKey, Date.now().toString(), 'PX', env.MIN_DELAY_BETWEEN_EMAILS_MS * 5);
-    } catch (err) {
-      logger.warn({ err }, 'Failed to mark send execution timestamp in Redis');
+      logger.error({ err, senderId }, 'Redis send-slot reservation failed');
+      throw err;
     }
   }
 
@@ -211,51 +179,65 @@ export class RateLimiterService {
     userId: string,
     hourlyLimit: number,
     currentCount: number,
-    nextEligibleAt: Date
+    nextEligibleAt: Date,
+    windowStart: Date
   ): Promise<void> {
     const redis = getRedisClient();
-    const { windowStart } = this.getHourlyWindowBounds();
     const alertKey = `slack_alert_sent:${senderId}:${windowStart.toISOString()}`;
-
-    // Redis SET NX prevents duplicate alerts within the same window
-    const acquired = await redis.set(alertKey, '1', 'EX', 7200, 'NX');
+    const lockKey = `${alertKey}:lock`;
+    const lockToken = randomUUID();
+    const acquired = await redis.set(lockKey, lockToken, 'EX', 120, 'NX');
     if (!acquired) {
-      // Alert already sent for this sender in this hourly window
       return;
     }
 
-    // Look up Slack integration for this user
-    const slackIntegration = await prisma.slackIntegration.findFirst({
-      where: {
-        userId,
-        isConnected: true,
-      },
-    });
+    try {
+      if (await redis.get(alertKey)) return;
 
-    if (!slackIntegration) {
-      logger.info({ userId }, 'No connected Slack integration found for user. Alert skipped.');
-      return;
-    }
+      const slackIntegration = await prisma.slackIntegration.findFirst({
+        where: {
+          userId,
+          isConnected: true,
+        },
+      });
 
-    const sender = await prisma.emailSender.findUnique({
-      where: { id: senderId },
-      select: { name: true, email: true },
-    });
-
-    await slackService.sendRateLimitAlert(
-      slackIntegration.botAccessToken,
-      slackIntegration.channelId || undefined,
-      slackIntegration.incomingWebhookUrl || undefined,
-      {
-        senderName: sender?.name || 'Primary Sender',
-        senderEmail: sender?.email || 'N/A',
-        hourlyLimit,
-        currentCount,
-        nextEligibleAt,
+      if (!slackIntegration) {
+        logger.info({ userId }, 'No connected Slack integration found; rate-limit alert skipped.');
+        return;
       }
-    );
+
+      const sender = await prisma.emailSender.findUnique({
+        where: { id: senderId },
+        select: { name: true, email: true },
+      });
+
+      const delivered = await slackService.sendRateLimitAlert(
+        slackIntegration.botAccessToken,
+        slackIntegration.channelId || undefined,
+        slackIntegration.incomingWebhookUrl || undefined,
+        {
+          senderName: sender?.name || 'Primary Sender',
+          senderEmail: sender?.email || 'N/A',
+          hourlyLimit,
+          currentCount,
+          nextEligibleAt,
+        }
+      );
+
+      if (delivered) {
+        await redis.set(alertKey, '1', 'EX', 7200);
+      } else {
+        logger.warn({ senderId, userId }, 'Slack did not confirm delivery of rate-limit alert');
+      }
+    } finally {
+      await redis.eval(
+        "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end",
+        1,
+        lockKey,
+        lockToken
+      );
+    }
   }
 }
 
 export const rateLimiterService = RateLimiterService.getInstance();
-

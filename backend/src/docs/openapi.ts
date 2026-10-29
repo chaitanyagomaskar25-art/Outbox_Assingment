@@ -83,6 +83,69 @@ export const openApiSpec = {
   },
   security: [{ bearerAuth: [] }, { cookieAuth: [] }],
   paths: {
+    '/api/auth/config': {
+      get: {
+        summary: 'Get authentication provider configuration',
+        tags: ['Authentication'],
+        security: [],
+        responses: {
+          200: { description: 'Authentication provider availability' },
+        },
+      },
+    },
+    '/api/auth/signup': {
+      post: {
+        summary: 'Create an account using email and password',
+        tags: ['Authentication'],
+        security: [],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['name', 'email', 'password'],
+                properties: {
+                  name: { type: 'string', maxLength: 100 },
+                  email: { type: 'string', format: 'email' },
+                  password: { type: 'string', minLength: 8, maxLength: 128 },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          201: { description: 'Account created and session established' },
+          409: { description: 'An account already exists for this email' },
+        },
+      },
+    },
+    '/api/auth/login': {
+      post: {
+        summary: 'Sign in using email and password',
+        tags: ['Authentication'],
+        security: [],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['email', 'password'],
+                properties: {
+                  email: { type: 'string', format: 'email' },
+                  password: { type: 'string', maxLength: 128 },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: { description: 'Signed in and session established' },
+          401: { description: 'Invalid email or password' },
+        },
+      },
+    },
     '/api/auth/me': {
       get: {
         summary: 'Get current authenticated user profile',
@@ -90,29 +153,6 @@ export const openApiSpec = {
         responses: {
           200: { description: 'Authenticated user details' },
           401: { description: 'Unauthorized' },
-        },
-      },
-    },
-    '/api/auth/mock-login': {
-      post: {
-        summary: 'Development login fallback for rapid testing',
-        tags: ['Authentication'],
-        security: [],
-        requestBody: {
-          content: {
-            'application/json': {
-              schema: {
-                type: 'object',
-                properties: {
-                  email: { type: 'string', format: 'email' },
-                  name: { type: 'string' },
-                },
-              },
-            },
-          },
-        },
-        responses: {
-          200: { description: 'Successfully authenticated' },
         },
       },
     },
@@ -250,4 +290,3 @@ export const openApiSpec = {
     },
   },
 };
-

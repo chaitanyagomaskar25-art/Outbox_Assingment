@@ -18,7 +18,10 @@ export class EmailController {
   public scheduleEmail = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const userId = req.user!.id;
-      const input = req.body as ScheduleEmailInput;
+      const input = {
+        ...req.body,
+        idempotencyKey: req.get('Idempotency-Key') || req.body.idempotencyKey,
+      } as ScheduleEmailInput;
       const email = await emailSchedulerService.scheduleSingleEmail(userId, input);
 
       return res.status(201).json({
@@ -258,6 +261,11 @@ export class EmailController {
       }
 
       const queue = getEmailQueue();
+      const existingJob = await queue.getJob(email.bullJobId || email.id);
+      if (existingJob) {
+        await existingJob.remove();
+      }
+
       await queue.add(
         'send-email',
         {
@@ -372,4 +380,3 @@ export class EmailController {
 }
 
 export const emailController = new EmailController();
-
